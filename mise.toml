@@ -1,7 +1,7 @@
 min_version = "2026.4.0"
 
 [tools]
-python = "3.12"
+python = "3.14.7"
 shellcheck = "0.10.0"
 yamllint = "1.35.1"
 actionlint = "1.7.7"
