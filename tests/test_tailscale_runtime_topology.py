@@ -65,7 +65,7 @@ class TailscaleRuntimeTopologyTest(unittest.TestCase):
             with self.subTest(path=path.name):
                 text = path.read_text(encoding="utf-8")
                 self.assertIn("TAILSCALE_DOCKER_TAG=stable", text)
-                after_version = text.split("TAILSAFE_VERSION=0.2.3\n", 1)[1]
+                after_version = text.split("TAILSAFE_VERSION=0.2.4\n", 1)[1]
                 self.assertTrue(
                     after_version.startswith("TAILSCALE_DOCKER_TAG=stable\n"),
                     msg=f"{path.name}: TAILSCALE_DOCKER_TAG must follow TAILSAFE_VERSION",
