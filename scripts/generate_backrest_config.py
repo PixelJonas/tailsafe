@@ -8,6 +8,11 @@ import sys
 from tailsafe_site import expand_env, load_site, outbound_remotes, plan_id, source_destination_ids
 
 VALID_GUID_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+MAINTENANCE_COMMAND_CONDITIONS = {
+    "CONDITION_FORGET_START",
+    "CONDITION_PRUNE_SUCCESS",
+}
+MAINTENANCE_COMMAND_ON_ERRORS = {"ON_ERROR_FATAL", "ON_ERROR_IGNORE"}
 
 
 def schedule(cron: str) -> dict:
@@ -35,6 +40,71 @@ def healthcheck_hook(conditions: list[str], url: str) -> dict:
         "onError": "ON_ERROR_IGNORE",
         "actionHealthchecks": {"webhookUrl": url},
     }
+
+
+def maintenance_command_hooks(remote_id: str, hooks: object) -> list[dict]:
+    field = f"outbound remote {remote_id} maintenanceCommandHooks"
+    if not isinstance(hooks, list):
+        raise ValueError(f"{field} must be a list")
+
+    validated = []
+    for index, hook in enumerate(hooks):
+        context = f"{field}[{index}]"
+        if not isinstance(hook, dict) or set(hook) != {
+            "conditions",
+            "onError",
+            "actionCommand",
+        }:
+            raise ValueError(
+                f"{context} must contain exactly conditions, onError, and actionCommand"
+            )
+
+        conditions = hook["conditions"]
+        if (
+            not isinstance(conditions, list)
+            or not conditions
+            or any(not isinstance(condition, str) for condition in conditions)
+        ):
+            raise ValueError(f"{context}.conditions must be a non-empty list of strings")
+        unknown_conditions = set(conditions) - MAINTENANCE_COMMAND_CONDITIONS
+        if unknown_conditions:
+            raise ValueError(
+                f"{context}.conditions contains unsupported values: "
+                f"{', '.join(sorted(unknown_conditions))}"
+            )
+        if len(set(conditions)) != len(conditions):
+            raise ValueError(f"{context}.conditions must not contain duplicates")
+
+        on_error = hook["onError"]
+        if (
+            not isinstance(on_error, str)
+            or on_error not in MAINTENANCE_COMMAND_ON_ERRORS
+        ):
+            raise ValueError(
+                f"{context}.onError must be ON_ERROR_FATAL or ON_ERROR_IGNORE"
+            )
+
+        action = hook["actionCommand"]
+        if not isinstance(action, dict) or set(action) != {"command"}:
+            raise ValueError(f"{context}.actionCommand must contain exactly command")
+        command = action["command"]
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError(f"{context}.actionCommand.command must be a non-empty string")
+        if "$" in command or "{{" in command or "}}" in command:
+            raise ValueError(
+                f"{context}.actionCommand.command must be static and must not contain "
+                "environment or template expansion"
+            )
+
+        validated.append(
+            {
+                "conditions": list(conditions),
+                "onError": on_error,
+                "actionCommand": {"command": command},
+            }
+        )
+
+    return validated
 
 
 def generated_dir() -> str:
@@ -169,32 +239,37 @@ def main(input_path: str, output_path: str) -> None:
         maintenance_repo_id = f"{remote_id}-maintenance"
         remote_backup_repo_ids[remote_id] = backup_repo_id
 
-        maintenance_hooks = [
-            healthcheck_hook(
-                [
-                    "CONDITION_CHECK_START",
-                    "CONDITION_CHECK_SUCCESS",
-                    "CONDITION_CHECK_ERROR",
-                ],
-                remote["healthchecks"]["check"],
-            ),
-            healthcheck_hook(
-                [
-                    "CONDITION_FORGET_START",
-                    "CONDITION_FORGET_SUCCESS",
-                    "CONDITION_FORGET_ERROR",
-                ],
-                remote["healthchecks"]["forget"],
-            ),
-            healthcheck_hook(
-                [
-                    "CONDITION_PRUNE_START",
-                    "CONDITION_PRUNE_SUCCESS",
-                    "CONDITION_PRUNE_ERROR",
-                ],
-                remote["healthchecks"]["prune"],
-            ),
-        ]
+        maintenance_hooks = maintenance_command_hooks(
+            remote_id, remote.get("maintenanceCommandHooks", [])
+        )
+        maintenance_hooks.extend(
+            [
+                healthcheck_hook(
+                    [
+                        "CONDITION_CHECK_START",
+                        "CONDITION_CHECK_SUCCESS",
+                        "CONDITION_CHECK_ERROR",
+                    ],
+                    remote["healthchecks"]["check"],
+                ),
+                healthcheck_hook(
+                    [
+                        "CONDITION_FORGET_START",
+                        "CONDITION_FORGET_SUCCESS",
+                        "CONDITION_FORGET_ERROR",
+                    ],
+                    remote["healthchecks"]["forget"],
+                ),
+                healthcheck_hook(
+                    [
+                        "CONDITION_PRUNE_START",
+                        "CONDITION_PRUNE_SUCCESS",
+                        "CONDITION_PRUNE_ERROR",
+                    ],
+                    remote["healthchecks"]["prune"],
+                ),
+            ]
+        )
 
         repos.extend(
             [

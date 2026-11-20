@@ -151,6 +151,18 @@ def legacy_site_config() -> dict:
     }
 
 
+def maintenance_command_hook(
+    command: str = "python3 /generated/bin/maintenance-event.py forget-start",
+    conditions: list[str] | None = None,
+    on_error: str = "ON_ERROR_FATAL",
+) -> dict:
+    return {
+        "conditions": conditions or ["CONDITION_FORGET_START"],
+        "onError": on_error,
+        "actionCommand": {"command": command},
+    }
+
+
 class GenerateBackrestConfigTest(unittest.TestCase):
     maxDiff = None
 
@@ -318,6 +330,146 @@ class GenerateBackrestConfigTest(unittest.TestCase):
                 "https://hc-ping.com/friend-c-prune-uuid",
             },
         )
+
+    def test_absent_and_empty_maintenance_command_hooks_are_byte_equivalent(self) -> None:
+        empty_hooks_site = multisite_site_config()
+        for remote in empty_hooks_site["outboundRemotes"]:
+            remote["maintenanceCommandHooks"] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            default_path = os.path.join(tmpdir, "default.json")
+            empty_hooks_path = os.path.join(tmpdir, "empty-hooks.json")
+            self.run_generator_to(default_path, multisite_site_config())
+            self.run_generator_to(empty_hooks_path, empty_hooks_site)
+
+            with open(default_path, "rb") as handle:
+                default_output = handle.read()
+            with open(empty_hooks_path, "rb") as handle:
+                empty_hooks_output = handle.read()
+
+        self.assertEqual(empty_hooks_output, default_output)
+
+    def test_maintenance_command_hooks_are_prepended_to_only_their_remote(self) -> None:
+        baseline = self.run_generator(multisite_site_config(), self.multisite_env())
+        custom_hooks = [
+            maintenance_command_hook(),
+            maintenance_command_hook(
+                command="python3 /generated/bin/maintenance-event.py prune-success",
+                conditions=["CONDITION_PRUNE_SUCCESS"],
+                on_error="ON_ERROR_IGNORE",
+            ),
+        ]
+        site_config = multisite_site_config()
+        site_config["outboundRemotes"][0]["maintenanceCommandHooks"] = custom_hooks
+
+        config = self.run_generator(site_config, self.multisite_env())
+        repos = {repo["id"]: repo for repo in config["repos"]}
+        baseline_repos = {repo["id"]: repo for repo in baseline["repos"]}
+
+        self.assertEqual(
+            repos["friend-b-maintenance"]["hooks"][: len(custom_hooks)], custom_hooks
+        )
+        self.assertEqual(
+            repos["friend-b-maintenance"]["hooks"][len(custom_hooks) :],
+            baseline_repos["friend-b-maintenance"]["hooks"],
+        )
+        for repo_id in (
+            "friend-b-backup",
+            "friend-c-backup",
+            "friend-c-maintenance",
+        ):
+            self.assertEqual(repos[repo_id], baseline_repos[repo_id])
+        self.assertEqual(config["plans"], baseline["plans"])
+
+    def test_maintenance_command_hooks_do_not_change_schedules_or_retention(self) -> None:
+        baseline = self.run_generator(multisite_site_config(), self.multisite_env())
+        site_config = multisite_site_config()
+        site_config["outboundRemotes"][0]["maintenanceCommandHooks"] = [
+            maintenance_command_hook()
+        ]
+
+        config = self.run_generator(site_config, self.multisite_env())
+        repos = {repo["id"]: repo for repo in config["repos"]}
+        baseline_repos = {repo["id"]: repo for repo in baseline["repos"]}
+
+        for repo_id, repo in repos.items():
+            for policy in ("checkPolicy", "forgetPolicy", "prunePolicy"):
+                self.assertEqual(repo[policy], baseline_repos[repo_id][policy])
+        self.assertEqual(config["plans"], baseline["plans"])
+
+    def test_invalid_maintenance_command_hooks_are_rejected(self) -> None:
+        invalid_cases = [
+            ("field is not a list", {}),
+            ("hook is not an object", ["not-a-hook"]),
+            (
+                "required field is missing",
+                [
+                    {
+                        "conditions": ["CONDITION_FORGET_START"],
+                        "actionCommand": {"command": "python3 /generated/event.py"},
+                    }
+                ],
+            ),
+            (
+                "extra action is present",
+                [
+                    maintenance_command_hook()
+                    | {"actionHealthchecks": {"webhookUrl": "https://example.invalid"}}
+                ],
+            ),
+            (
+                "condition is not maintenance-safe",
+                [maintenance_command_hook(conditions=["CONDITION_PRUNE_START"])],
+            ),
+            (
+                "condition is duplicated",
+                [
+                    maintenance_command_hook(
+                        conditions=["CONDITION_FORGET_START", "CONDITION_FORGET_START"]
+                    )
+                ],
+            ),
+            ("onError is invalid", [maintenance_command_hook(on_error="ON_ERROR_WARN")]),
+            ("command is empty", [maintenance_command_hook(command="  ")]),
+            (
+                "command is not a string",
+                [
+                    {
+                        "conditions": ["CONDITION_FORGET_START"],
+                        "onError": "ON_ERROR_FATAL",
+                        "actionCommand": {"command": 42},
+                    }
+                ],
+            ),
+            (
+                "command uses environment expansion",
+                [maintenance_command_hook(command="python3 event.py ${API_TOKEN}")],
+            ),
+            (
+                "command uses a Backrest template",
+                [maintenance_command_hook(command="python3 event.py {{ .Repo }}")],
+            ),
+            (
+                "actionCommand has an extra field",
+                [
+                    {
+                        "conditions": ["CONDITION_FORGET_START"],
+                        "onError": "ON_ERROR_FATAL",
+                        "actionCommand": {
+                            "command": "python3 /generated/event.py",
+                            "env": {"API_TOKEN": "secret"},
+                        },
+                    }
+                ],
+            ),
+        ]
+
+        for name, hooks in invalid_cases:
+            with self.subTest(name=name):
+                site_config = multisite_site_config()
+                site_config["outboundRemotes"][0]["maintenanceCommandHooks"] = hooks
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.run_generator(site_config, self.multisite_env())
 
     def test_generator_accepts_legacy_remote_schema(self) -> None:
         config = self.run_generator(
