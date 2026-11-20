@@ -105,7 +105,7 @@ If either side uses the wrong pair, backups fail with HTTP authentication errors
 | Field | Role |
 | --- | --- |
 | `instance` | Local TailSafe instance name. Used to identify this site in generated configuration. |
-| `outboundRemotes[]` | Each remote TailSafe stack this site sends backups to. Every entry defines an `id`, an endpoint hostname for human reference, explicit backup and maintenance `rest:http://...` URIs, a repository password reference, per-remote maintenance Healthchecks.io URLs, and optional schedule/retention overrides. |
+| `outboundRemotes[]` | Each remote TailSafe stack this site sends backups to. Every entry defines an `id`, an endpoint hostname for human reference, explicit backup and maintenance `rest:http://...` URIs, a repository password reference, per-remote maintenance Healthchecks.io URLs, optional static maintenance command hooks, and optional schedule/retention overrides. |
 | `inboundPeers[]` | Each remote friend/tailnet allowed to send backups into this site. Every entry defines an `id`, friend-issued endpoint auth key, endpoint hostname, backup and maintenance HTTP credentials, and a `repositorySubdir` under `${REPO_DATA_ROOT}`. |
 | `defaults.backupCron` | Default backup schedule (cron expression). |
 | `defaults.checkCron` | Default schedule for repository `check` jobs. |
@@ -117,6 +117,38 @@ If either side uses the wrong pair, backups fail with HTTP authentication errors
 Environment placeholders such as `${TAILSAFE_REMOTE_BACKUP_HTTP_PASSWORD_FRIEND_B}` and `${RESTIC_REPOSITORY_PASSWORD}` in the site file are expanded by the configurator from the full `.env` at generation time. Values inserted into repository URIs are URL-encoded so passwords containing reserved characters (for example `@`, `:`, or `/`) produce valid `rest:http://...` addresses. Repository passwords and htpasswd material are expanded without URL encoding.
 
 For `backupUri` and `maintenanceUri`, the URI path segment should match the identifier the receiving site uses for the sending site. In the one-friend examples (`config/site.one-friend.example.json` and [Agent-assisted install](agent-install.md)), home-a pushes to `/home-a` on friend-b's endpoint, and friend-b pushes to `/friend-b` on home-a's endpoint.
+
+### Maintenance command hooks
+
+An outbound remote can define `maintenanceCommandHooks` as a list of static commands tied to repository maintenance events. TailSafe prepends them, in their listed order, to that remote's `<remote-id>-maintenance` repository hooks before the existing check, forget, and prune Healthchecks.io hooks. It does not add them to the `<remote-id>-backup` repository or to any plan, and it does not change schedules or retention. Omitting the field or setting it to `[]` preserves the default generated output.
+
+Each hook must contain exactly `conditions`, `onError`, and `actionCommand`. `conditions` must be a non-empty, duplicate-free list containing only:
+
+- `CONDITION_FORGET_START`, immediately before forget runs
+- `CONDITION_PRUNE_SUCCESS`, after prune succeeds
+
+`onError` must explicitly be `ON_ERROR_FATAL` to stop the maintenance operation when the command fails, or `ON_ERROR_IGNORE` to record the failure and continue. `actionCommand` must contain only a non-empty `command` string.
+
+Commands are static: do not include credentials or other secrets. Dollar-sign environment expansion and Backrest `{{ ... }}` template syntax are rejected. The Backrest image includes Python 3 for local helper scripts; the example below assumes a user-supplied script at `/generated/bin/maintenance-event.py`.
+
+```json
+"maintenanceCommandHooks": [
+  {
+    "conditions": ["CONDITION_FORGET_START"],
+    "onError": "ON_ERROR_FATAL",
+    "actionCommand": {
+      "command": "python3 /generated/bin/maintenance-event.py forget-start"
+    }
+  },
+  {
+    "conditions": ["CONDITION_PRUNE_SUCCESS"],
+    "onError": "ON_ERROR_IGNORE",
+    "actionCommand": {
+      "command": "python3 /generated/bin/maintenance-event.py prune-success"
+    }
+  }
+]
+```
 
 ### Legacy migration
 

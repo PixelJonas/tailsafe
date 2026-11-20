@@ -10,6 +10,26 @@
       "backupUri": "rest:http://backup-friend-b:${TAILSAFE_REMOTE_BACKUP_HTTP_PASSWORD_FRIEND_B}@tailsafe-friend-b-endpoint.ts.net:8000/home-a",
       "maintenanceUri": "rest:http://maint-friend-b:${TAILSAFE_REMOTE_MAINT_HTTP_PASSWORD_FRIEND_B}@tailsafe-friend-b-endpoint.ts.net:8001/home-a",
       "repositoryPassword": "${RESTIC_REPOSITORY_PASSWORD}",
+      "maintenanceCommandHooks": [
+        {
+          "conditions": [
+            "CONDITION_FORGET_START"
+          ],
+          "onError": "ON_ERROR_FATAL",
+          "actionCommand": {
+            "command": "python3 /generated/bin/maintenance-event.py forget-start"
+          }
+        },
+        {
+          "conditions": [
+            "CONDITION_PRUNE_SUCCESS"
+          ],
+          "onError": "ON_ERROR_IGNORE",
+          "actionCommand": {
+            "command": "python3 /generated/bin/maintenance-event.py prune-success"
+          }
+        }
+      ],
       "healthchecks": {
         "check": "https://hc-ping.com/friend-b-check-uuid",
         "forget": "https://hc-ping.com/friend-b-forget-uuid",
